@@ -1,12 +1,29 @@
 import json
-from os import walk
 import time
 import threading
-import argparse
 from pprint import pprint
 from scapy.all import *
 
-# Global variables for the routing and forwarding tables
+# Define custom routing protocol (Layer 4 above IP)
+class TableProtocol(Packet):
+    name = "TableProtocol"
+    fields_desc = [
+        IPField("origin", "0.0.0.0"),          # Origin IP address
+        IPField("destination", "0.0.0.0"),     # Destination IP address
+        IntField("distance", 0),               # Distance metric
+        ShortField("protocol_id", 42)          # Protocol identifier for routing
+    ]
+
+    def show(self, *args, **kwargs):
+        "Pretty print the TableProtocol packet information."
+        print("TableProtocol Packet Information:")
+        print(f"  - Destination IP: {self.destination}")
+        print(f"  - Distance: {self.distance}")
+        print(f"  - Protocol ID: {self.protocol_id}")
+
+bind_layers(IP, TableProtocol, proto=143)
+
+# Global tables for routing and forwarding
 routing_table = {}  # {destination: {next_hop IP: distance}}
 forwarding_table = {}  # {destination IP: next hop IP}
 local_interfaces = {}  # {local_interface: IP address}
@@ -15,13 +32,12 @@ def initialize_routing():
     "Initialize routing and forwarding tables from configuration."
     global routing_table, forwarding_table, local_interfaces
 
-    # Add the local interfaces to the routing table
-    ifaces: NetworkInterfaceDict = conf.ifaces
-    iface: NetworkInterface
-    for iface_name, iface in ifaces.items():
-        local_interfaces[iface_name] = iface.ip
-        routing_table[iface.ip] = {iface_name: 0}  # Local interface has distance 0
-        forwarding_table[iface.ip] = iface_name
+    # Populate local interfaces into the routing table
+    for iface_name, iface in conf.ifaces.items():
+        if iface.ip:
+            local_interfaces[iface_name] = iface.ip
+            routing_table[iface.ip] = {iface_name: 0}  # Local interface has distance 0
+            forwarding_table[iface.ip] = iface_name
 
     print("Routing table initialized:")
     pprint(routing_table)
@@ -29,7 +45,7 @@ def initialize_routing():
     pprint(forwarding_table)
 
 def advertise_routes():
-    "Periodically send routing table updates to neighbors using split horizon with poison reverse."
+    "Periodically send routing table updates to neighbors with split horizon and poison reverse."
     while True:
         for iface, iface_ip in local_interfaces.items():
             for dest, paths in routing_table.items():
@@ -37,11 +53,8 @@ def advertise_routes():
 
                 # Apply split horizon with poison reverse
                 for path_iface, distance in paths.items():
-                    if path_iface == iface:
-                        dest_info = f"{dest},{16}"  # Poison reverse with infinite distance
-                    else:
-                        dest_info = f"{dest},{min_distance}"
-                    pkt = Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src=iface_ip, dst="255.255.255.255") / Raw(load=dest_info)
+                    advertised_distance = 16 if path_iface == iface else min_distance  # Poison reverse for local path
+                    pkt = Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src=iface_ip, dst="255.255.255.255") / TableProtocol(destination=dest, distance=advertised_distance)
 
                     try:
                         sendp(pkt, iface=iface, verbose=0)
@@ -51,16 +64,16 @@ def advertise_routes():
         time.sleep(5)
 
 def update_routing_table(dest_ip, distance, recv_iface):
-    "Update routing and forwarding tables if a shorter path is found."
+    "Update routing and forwarding tables if a shorter path is discovered."
     updated = False
-    new_distance = distance + 1  # Increase distance by 1 for hop count
+    new_distance = distance + 1  # Increment distance for each hop
     current_paths = routing_table.get(dest_ip, {})
 
-    # Apply split horizon: avoid creating loops by ignoring routes from the same interface
+    # Avoid loops by ignoring routes from the same interface with a shorter/equal distance
     if recv_iface in current_paths and current_paths[recv_iface] <= new_distance:
         return False
 
-    # Update routing table if a shorter path is found or a new destination
+    # Update if it's a new destination or a shorter path
     if dest_ip not in routing_table or new_distance < min(current_paths.values()):
         routing_table[dest_ip] = {recv_iface: new_distance}
         forwarding_table[dest_ip] = recv_iface
@@ -68,36 +81,33 @@ def update_routing_table(dest_ip, distance, recv_iface):
         updated = True
         print(f"Routing table updated for {dest_ip}:")
         pprint(routing_table)
-        print(f"Forwarding table updated:")
+        print("Forwarding table updated:")
         pprint(forwarding_table)
         print("\n")
 
     return updated
 
 def handle_route_advertisement(pkt):
-    "Handle incoming route advertisements and update routing table."
-    if IP in pkt and Raw in pkt:
-        data = pkt[Raw].load.decode()
-        dest_ip, distance = data.split(",")
-        distance = int(distance)
+    "Process incoming route advertisements and update the routing table."
+    if TableProtocol in pkt:
+        dest_ip = pkt[TableProtocol].destination
+        distance = pkt[TableProtocol].distance
+        recv_iface = pkt.sniffed_on
 
-        update_routing_table(dest_ip, distance, pkt.sniffed_on)
+        update_routing_table(dest_ip, distance, recv_iface)
 
 def forward_packet(pkt):
-    "Forward packet based on forwarding table and vector-distance algorithm."
+    "Forward packets based on forwarding table using vector-distance algorithm."
     if IP in pkt:
         dest_ip = pkt[IP].dst
-        if dest_ip in local_interfaces.values(): 
-            return
+        if dest_ip in local_interfaces.values():
+            return  # Destination is a local interface
 
         route = routing_table.get(dest_ip)
-
         if route:
-            # Find the interface to send the packet via
             out_iface = forwarding_table.get(dest_ip)
             if out_iface:
-                #pkt[Ether].dst = None  # Clear destination MAC address for re-resolution
-
+                pkt[IP].dst = None # Avoid infinite loop
                 try:
                     sendp(pkt, iface=out_iface, verbose=0)
                     print(f"Packet forwarded via {out_iface} to destination {dest_ip}")
@@ -110,15 +120,14 @@ def forward_packet(pkt):
     else:
         print("Non-IP packet received, ignoring.")
 
-# Main function
 def main():
     initialize_routing()
 
     # Start the routing advertisement thread
     threading.Thread(target=advertise_routes, daemon=True).start()
 
-    # Sniff for route advertisements and data packets
-    sniff(iface=list(local_interfaces.keys()), filter='ip', prn=lambda pkt: handle_route_advertisement(pkt) if pkt[IP].dst == '255.255.255.255' else forward_packet(pkt))
+    # Sniff for routing advertisements and data packets
+    sniff(iface=list(local_interfaces.keys()), filter="ip", prn=lambda pkt: handle_route_advertisement(pkt) if TableProtocol in pkt else forward_packet(pkt))
 
 if __name__ == '__main__':
     main()
