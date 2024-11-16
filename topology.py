@@ -2,17 +2,17 @@ import argparse
 import json
 import os
 from mininet.topo import Topo
-from mininet.net import Mininet
+from mininet.net import Link, Mininet
 from mininet.node import Node
 from mininet.log import setLogLevel, info
 from mininet.cli import CLI
 
 class BasicTopo(Topo):
-    "A LinuxRouter connecting two hosts"
+    "A router connecting two hosts"
     def build(self, **_opts):
         router = self.addHost('r', ip=None)
-        host1 = self.addHost('h1', ip='10.1.1.1/24', defaultRoute='via 10.1.1.254')
-        host2 = self.addHost('h2', ip='10.2.2.1/24', defaultRoute='via 10.2.2.254')
+        host1 = self.addHost('h1', ip=None, defaultRoute='via 10.1.1.254')
+        host2 = self.addHost('h2', ip=None, defaultRoute='via 10.2.2.254')
 
         # Links with correct IP assignments for each side
         self.addLink(host1, router, 
@@ -21,6 +21,28 @@ class BasicTopo(Topo):
         self.addLink(host2, router, 
                      intfName1='h2-eth0', params1={'ip':'10.2.2.1/24'},
                      intfName2='r-eth2', params2={'ip':'10.2.2.254/24'})
+
+class ExampleTopo(Topo):
+    "Two routers connecting two hosts"
+    def build(self, **_opts):
+        r1 = self.addHost('r1', ip='10.0.0.1')
+        r2 = self.addHost('r2', ip='10.0.0.2')
+        host1 = self.addHost('h1', ip='10.1.1.1/24', defaultRoute='via 10.1.1.254')
+        host2 = self.addHost('h2', ip='10.2.2.1/24', defaultRoute='via 10.2.2.254')
+
+        self.addLink(r1, r2, 
+                     intfName1='r1-eth0', params1={'ip': '10.0.0.1/24'},
+                     intfName2='r2-eth0', params2={'ip': '10.0.0.2/24'})
+ 
+        # Links each host to it's router
+        self.addLink(host1, r1, 
+                     intfName1='h1-eth0', params1={'ip':'10.1.1.1/24'},
+                     intfName2='r1-eth1', params2={'ip':'10.1.1.254/24'})
+        self.addLink(host2, r2, 
+                     intfName1='h2-eth0', params1={'ip':'10.2.2.1/24'},
+                     intfName2='r2-eth1', params2={'ip':'10.2.2.254/24'})
+
+
 
 class StarTopo(Topo):
     "A simple star topology with a central router connecting three hosts"
@@ -82,31 +104,42 @@ class RingTopo(Topo):
                          intfName1=f'h{i}-eth0', params1={'ip': f'10.0.{i+1}.1/24'},
                          intfName2=f'h{i}-eth1', params2={'ip': f'10.0.{i+1}.254/24'})
 
-def gather_route_info(net: Mininet):
-    "Collects route info for each device based on its links."
+def _get_info(nodes, net: Mininet):
+    "Helper function to gather interface and neighbor information."
     route_info = {}
-    _get_info(net.hosts, net, route_info)
-    _get_info(net.switches, net, route_info)
+    for node in nodes:
+        interfaces = node.intfList()
+        neighbors = []
+        for intf in interfaces:
+            # Find the link connected to this interface
+            link: Link
+            for link in net.links:
+                # Check if the link has one of the node interfaces
+                if intf.name == link.intf2.name or intf.name == link.intf1.name:
+                    neighbor = link.intf1 if link.intf2 == intf.name else link.intf1
+                    # Identify the neighbor based on the other interface in the link
+                    neighbors.append({
+                        'network': neighbor.IP(),
+                        'mask': neighbor.prefixLen,
+                        'next_hop': None,
+                        'iface': intf.name,
+                        'cost': 0
+                    })
+
+        route_info[node.name] = neighbors
 
     return route_info
 
-def _get_info(nodes, net: Mininet, route_info):
-    "Helper function to gather interface and neighbor information."
-    for node in nodes:
-        interfaces = node.intfList()
-
-        route_info[node.name] = {
-            'type': type(node).__name__,
-            'local_interfaces': {intf.name: intf.IP() for intf in interfaces if intf.IP()},
-        }
-
-def show_routing_info(route_info):
+def configure_initial_table(net):
+    route_info = _get_info(net.hosts, net)
     "Outputs routing configurations for each host and writes to a file."
     for host_name, config in route_info.items():
-        print(f"Node: {host_name}")
-        print(f"Type: {config['type']}")
-        print(f"Local Interfaces: {config['local_interfaces']}")
-        print("\n")
+        if not os.path.exists('./tmp'):
+            os.makedirs('./tmp')
+
+        config_file = f"./tmp/{host_name}.json"
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
 
 def run(topo_class):
     "Run Mininet with the chosen topology"
@@ -116,20 +149,20 @@ def run(topo_class):
             v.cmd('ethtool -K '+itf.name+' tx off rx off')
     net.start()
 
-    route_info = gather_route_info(net)
-    show_routing_info(route_info)
+    configure_initial_table(net)
     
     CLI(net)
     net.stop()
 
 def main():
     parser = argparse.ArgumentParser(description="Run a Mininet topology")
-    parser.add_argument("--topo", type=str, choices=['Basic', 'Star', 'Mesh', 'Bar', 'Ring'], default='Basic',
+    parser.add_argument("--topo", type=str, choices=['Basic', 'Star', 'Mesh', 'Bar', 'Ring', 'Example'], default='Basic',
                         help="Choose the topology to run (default: Basic). Options: Basic, Star, Mesh, Bar, Ring.")
     args = parser.parse_args()
 
     topo_classes = {
         'Basic': BasicTopo,
+        'Example': ExampleTopo,
         'Star': StarTopo,
         'Mesh': MeshTopo,
         'Bar': BarTopo,
