@@ -2,9 +2,9 @@ import json
 import argparse
 from scapy.all import *
 
-# Define custom routing protocol (Layer 4 above IP)
-class TableProtocol(Packet):
-    name = "TableProtocol"
+# Define custom routing protocol (Layer 4 above IP) TRP (Table Routing Protocol)
+class TRP(Packet):
+    name = "TableRoutingProtocol"
     fields_desc = [
         IPField("network", "0.0.0.0"),     # Destination IP address
         IntField("mask", 0),               # IP mask
@@ -15,14 +15,14 @@ class TableProtocol(Packet):
 
     def show(self, *args, **kwargs):
         "Pretty print the TableProtocol packet information."
-        print("TableProtocol Packet Information:")
+        print("TRP Packet Information:")
         print(f"  - Network IP: {self.network}/{self.mask}")
         print(f"  - Cost: {self.cost}")
         print(f"  - Next hop: {self.next_hop}")
         print(f"  - Protocol ID: {self.protocol_id}")
         print("\n")
 
-bind_layers(IP, TableProtocol, proto=143)
+bind_layers(IP, TRP, proto=143)
 
 local_interfaces = {}
 routing_table = []
@@ -33,9 +33,9 @@ def share_routes():
         for iface_name, iface_ip in local_interfaces.items():
             for route in routing_table:
                 pkt = Ether(dst="ff:ff:ff:ff:ff:ff") / \
-                IP(src=iface_ip, dst="255.255.255.255") / \
-                TableProtocol(network=route['network'], mask=int(route['mask']),
-                    next_hop=route['next_hop'] or "0.0.0.0",  # Handle null in JSON
+                IP(dst=iface_ip) / \
+                TRP(network=route['network'], mask=int(route['mask']),
+                    next_hop=route['next_hop'], 
                     cost=route['cost'])
 
                 try:
@@ -46,11 +46,42 @@ def share_routes():
         time.sleep(5)
 
 def handle_route_share(pkt):
-    pkt[TableProtocol].show()
+    is_new_entry = True
+    updated = False
+    for route in routing_table:
+        if route['network'] == pkt[TRP].network:
+            # Handle update for best route
+            is_new_entry = False
+
+    if is_new_entry:
+        routing_table.append({
+            'network': pkt[TRP].network,
+            'mask': pkt[TRP].mask,
+            'cost': pkt[TRP].cost + 1, # Add one to cost for each iteration
+            'next_hop': pkt[TRP].next_hop,
+            'iface': pkt.sniffed_on
+        })
+        updated = True
+
+    if updated:
+        show_routing_table()
+
+def show_routing_table():
+    print(f'\n[Routing Table] Entries: {len(routing_table)}\n-------------------------')
+    print("{:<12} {:<12} {:<10} {:<5}".format('Network','Next hop','Interface','Cost'))
+    for route in routing_table:
+        print("{:<12} {:<12} {:<10} {:<5}".format(f'{route['network']}/{route['mask']}', str(route['next_hop']), route['iface'], route['cost']))
+    print('-------------------------\n')
 
 def init(node):
-    global routing_table
+    global routing_table, local_interfaces
     "Load configuration from the node config file."
+
+    iface: NetworkInterface
+    for iface_name, iface in conf.ifaces.items():
+        if iface_name != 'lo':
+            local_interfaces[iface_name] = iface.ip
+
     try:
         with open(f'tmp/{node}.json', 'r') as f:
             routing_table = json.load(f)
@@ -61,10 +92,10 @@ def init(node):
         return None
 
 def forward_packet(pkt):
-    pkt.show()
     "Forward packets based on forwarding table using vector-distance algorithm."
     if IP in pkt:
         dst = pkt[IP].dst
+        pkt.show()
         for route in routing_table:
             if route['network'] == dst and route['iface'] != pkt.sniffed_on:
                 pkt[Ether].dst = None
@@ -81,16 +112,13 @@ def main():
     if not init(args.node):
         return
 
-    iface: NetworkInterface
-    for iface_name, iface in conf.ifaces.items():
-        if iface_name != 'lo':
-            local_interfaces[iface_name] = iface.ip
+    show_routing_table()
 
     # Start the routing share thread
     threading.Thread(target=share_routes, daemon=True).start()
 
     # Sniff for routing share and data packets
-    sniff(iface=list(local_interfaces.keys()), filter="ip", prn=lambda pkt: handle_route_share(pkt) if TableProtocol in pkt else forward_packet(pkt))
+    sniff(iface=list(local_interfaces.keys()), filter="ip", prn=lambda pkt: handle_route_share(pkt) if TRP in pkt else forward_packet(pkt))
 
 
 if __name__ == '__main__':
