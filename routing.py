@@ -50,8 +50,15 @@ def handle_route_share(pkt):
     updated = False
     for route in routing_table:
         if route['network'] == pkt[TRP].network:
-            # Handle update for best route
             is_new_entry = False
+            # Handle update for best route
+            if pkt[TRP].cost + 1 < route['cost']:
+                old_route = route.copy()
+                route['iface'] = pkt.sniffed_on
+                route['next_hop'] = pkt.next_hop # TODO fix this as it's always the same for now
+                route['cost'] = pkt[TRP].cost + 1
+                updated = True
+                show_new_best_route(old_route, route)
 
     if is_new_entry:
         routing_table.append({
@@ -66,6 +73,13 @@ def handle_route_share(pkt):
     if updated:
         show_routing_table()
 
+def show_interfaces():
+    print(f'\n[Interfaces] Entries: {len(local_interfaces)}\n-------------------------')
+    print("{:<12} {:<12}".format('Name','IP'))
+    for iface_name, iface_ip in local_interfaces.items():
+        print("{:<12} {:<12}".format(iface_name, iface_ip))
+    print('-------------------------\n')
+
 def show_routing_table():
     print(f'\n[Routing Table] Entries: {len(routing_table)}\n-------------------------')
     print("{:<12} {:<12} {:<10} {:<5}".format('Network','Next hop','Interface','Cost'))
@@ -73,18 +87,27 @@ def show_routing_table():
         print("{:<12} {:<12} {:<10} {:<5}".format(f'{route['network']}/{route['mask']}', str(route['next_hop']), route['iface'], route['cost']))
     print('-------------------------\n')
 
+def show_new_best_route(old_route, new_route):
+    print(f'\n[New route] {old_route['network']}/{old_route['mask']}\n-------------------------')
+    print("      {:<12} {:<10} {:<5}".format('Next hop','Interface','Cost'))
+    print("[OLD] {:<12} {:<10} {:<5}".format(f'{str(old_route['next_hop'])}', old_route['iface'], old_route['cost']))
+    print("[NEW] {:<12} {:<10} {:<5}".format(f'{str(new_route['next_hop'])}', new_route['iface'], new_route['cost']))
+    print('-------------------------\n')
+
 def init(node):
     global routing_table, local_interfaces
     "Load configuration from the node config file."
-
-    iface: NetworkInterface
-    for iface_name, iface in conf.ifaces.items():
-        if iface_name != 'lo':
-            local_interfaces[iface_name] = iface.ip
-
+   
     try:
         with open(f'tmp/{node}.json', 'r') as f:
             routing_table = json.load(f)
+
+        ifaces = [route['iface'] for route in routing_table]
+        iface: NetworkInterface
+        for iface_name, iface in conf.ifaces.items():
+            if iface_name in ifaces:
+                local_interfaces[iface_name] = iface.ip
+
 
         return routing_table
     except FileNotFoundError:
@@ -95,7 +118,6 @@ def forward_packet(pkt):
     "Forward packets based on forwarding table using vector-distance algorithm."
     if IP in pkt:
         dst = pkt[IP].dst
-        pkt.show()
         for route in routing_table:
             if route['network'] == dst and route['iface'] != pkt.sniffed_on:
                 pkt[Ether].dst = None
@@ -112,6 +134,7 @@ def main():
     if not init(args.node):
         return
 
+    show_interfaces()
     show_routing_table()
 
     # Start the routing share thread
