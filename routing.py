@@ -1,5 +1,6 @@
 import json
 import argparse
+import ipaddress
 from scapy.all import *
 
 # Define custom routing protocol (Layer 4 above IP) TRP (Table Routing Protocol)
@@ -43,11 +44,12 @@ def share_routes():
                 except Exception as e:
                     print(f"Error sending packet on {iface_name}: {e}")
 
-        time.sleep(5)
+        time.sleep(2)
 
 def handle_route_share(pkt):
     is_new_entry = True
     updated = False
+
     for route in routing_table:
         if route['network'] == pkt[TRP].network:
             is_new_entry = False
