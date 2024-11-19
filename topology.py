@@ -75,6 +75,7 @@ class TwoPathsTopo(Topo):
         # Add hosts
         host1 = self.addHost('h1', ip='10.1.1.1/24', defaultRoute='via 10.1.1.254')
         host2 = self.addHost('h2', ip='10.2.2.1/24', defaultRoute='via 10.2.2.254')
+        host3 = self.addHost('h3', ip='10.2.2.2/24', defaultRoute='via 10.2.3.254')
 
         # Links to r0
         self.addLink(host1, s0, 
@@ -107,13 +108,17 @@ class TwoPathsTopo(Topo):
                      intfName1='h2-eth0', params1={'ip': '10.2.2.1/24'},
                      intfName2='s4-eth2', params2={'ip': '10.2.2.254/24'})
 
+        self.addLink(host3, s4, 
+                     intfName1='h3-eth0', params1={'ip': '10.2.2.2/24'},
+                     intfName2='s4-eth4', params2={'ip': '10.2.3.254/24'})
+
     def __str__(self) -> str:
         return  """
         One host connected to other with 2 diferent paths
 
-                  |-- s1 --- s2 --|
-            h1 -- s0              s4 -- h2
-                  |------ s3 -----|
+                  |-- s1 --- s2 --|   | -- h2
+            h1 -- s0              s4 -- 
+                  |------ s3 -----|   | -- h3
 
 """
 
