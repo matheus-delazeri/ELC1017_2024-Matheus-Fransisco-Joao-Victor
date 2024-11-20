@@ -24,7 +24,7 @@ class BasicTopo(Topo):
 
 class ThreeRoutersTopo(Topo):
 
-   def build(self, **_opts):
+    def build(self, **_opts):
         # Add routers
         r1 = self.addSwitch('s1')
         r2 = self.addSwitch('s2')
@@ -54,13 +54,12 @@ class ThreeRoutersTopo(Topo):
                      intfName1='h2-eth0', params1={'ip': '10.2.2.1/24'},
                      intfName2='s3-eth1', params2={'ip': '10.2.2.254/24'})
 
-   def __str__(self) -> str:
+    def __str__(self):
         return """
-        3 routers connecting two hosts"
+        3 routers connecting two hosts
 
             h1 -- s1 -- s2 -- s3 -- h2
-
-"""
+        """
 
 class TwoPathsTopo(Topo):
    
@@ -75,7 +74,6 @@ class TwoPathsTopo(Topo):
         # Add hosts
         host1 = self.addHost('h1', ip='10.1.1.1/24', defaultRoute='via 10.1.1.254')
         host2 = self.addHost('h2', ip='10.2.2.1/24', defaultRoute='via 10.2.2.254')
-        host3 = self.addHost('h3', ip='10.2.2.2/24', defaultRoute='via 10.2.3.254')
 
         # Links to r0
         self.addLink(host1, s0, 
@@ -107,20 +105,14 @@ class TwoPathsTopo(Topo):
         self.addLink(host2, s4, 
                      intfName1='h2-eth0', params1={'ip': '10.2.2.1/24'},
                      intfName2='s4-eth2', params2={'ip': '10.2.2.254/24'})
-
-        self.addLink(host3, s4, 
-                     intfName1='h3-eth0', params1={'ip': '10.2.2.2/24'},
-                     intfName2='s4-eth4', params2={'ip': '10.2.3.254/24'})
-
-    def __str__(self) -> str:
+    def __str__(self):
         return  """
-        One host connected to other with 2 diferent paths
+        One host connected to others with two different paths
 
-                  |-- s1 --- s2 --|   | -- h2
-            h1 -- s0              s4 -- 
-                  |------ s3 -----|   | -- h3
-
-"""
+                  |-- s1 --- s2 --|  
+            h1 -- s0              s4 -- h2
+                  |------ s3 -----| 
+        """
 
 class MeshTopo(Topo):
 
@@ -128,14 +120,14 @@ class MeshTopo(Topo):
         # Create switches for each host
         switches = []
         for i in range(1, 5):
-            switch = self.addSwitch(f's{i}')
+            switch = self.addSwitch('s{}'.format(i))
             switches.append(switch)
 
             # Create hosts and link each to its switch
-            host = self.addHost(f'h{i}', ip=f'10.{i}.{i}.1/24', defaultRoute=f'via 10.{i}.{i}.254')
+            host = self.addHost('h{}'.format(i), ip='10.{}.{}.1/24'.format(i, i), defaultRoute='via 10.{}.{}.254'.format(i, i))
             self.addLink(host, switch,
-                         intfName1=f'h{i}-eth0', params1={'ip': f'10.{i}.{i}.1/24'},
-                         intfName2=f's{i}-eth0', params2={'ip': f'10.{i}.{i}.254/24'})
+                         intfName1='h{}-eth0'.format(i), params1={'ip': '10.{}.{}.1/24'.format(i, i)},
+                         intfName2='s{}-eth0'.format(i), params2={'ip': '10.{}.{}.254/24'.format(i, i)})
 
         # Fully connect switches
         subnet_counter = 1
@@ -143,11 +135,11 @@ class MeshTopo(Topo):
             for j, sw2 in enumerate(switches):
                 if j > i:  # Avoid duplicate connections
                     self.addLink(sw1, sw2,
-                                 intfName1=f's{i+1}-eth{subnet_counter}', params1={'ip': f'10.5.{subnet_counter}.{i}/24'},
-                                 intfName2=f's{j+1}-eth{subnet_counter}', params2={'ip': f'10.5.{subnet_counter}.{j}/24'})
+                                 intfName1='s{}-eth{}'.format(i+1, subnet_counter), params1={'ip': '10.5.{}.{}/24'.format(subnet_counter, i)},
+                                 intfName2='s{}-eth{}'.format(j+1, subnet_counter), params2={'ip': '10.5.{}.{}/24'.format(subnet_counter, j)})
                     subnet_counter += 1
 
-    def __str__(self) -> str:
+    def __str__(self):
         return """
         A fully connected mesh topology with four hosts
 
@@ -157,9 +149,9 @@ class MeshTopo(Topo):
                | ----- x ----- x ----- |
                        | ----- |
                            x
-"""
+        """
 
-def _get_info(nodes, net: Mininet):
+def _get_info(nodes, net):
     "Helper function to gather interface and neighbor information."
     route_info = {}
     for node in nodes:
@@ -167,7 +159,6 @@ def _get_info(nodes, net: Mininet):
         neighbors = []
         for intf in interfaces:
             # Find the link connected to this interface
-            link: Link
             for link in net.links:
                 # Check if the link has one of the node interfaces
                 if intf.name == link.intf2.name or intf.name == link.intf1.name:
@@ -186,13 +177,17 @@ def _get_info(nodes, net: Mininet):
     return route_info
 
 def configure_initial_table(net):
-    route_info = _get_info(net.switches, net) | _get_info(net.hosts, net)
+    # Combine host and switch info
+    hosts_info = _get_info(net.hosts, net)
+    switches_info = _get_info(net.switches, net)
+    route_info = {**hosts_info, **switches_info}  # Use dictionary unpacking alternative
+
     "Outputs routing configurations for each host and writes to a file."
     for host_name, config in route_info.items():
         if not os.path.exists('./tmp'):
             os.makedirs('./tmp')
 
-        config_file = f"./tmp/{host_name}.json"
+        config_file = "./tmp/{}.json".format(host_name)
         with open(config_file, 'w') as f:
             json.dump(config, f)
 
@@ -224,8 +219,8 @@ def main():
 
     topo_class = topo_classes.get(args.topo)
     topo = topo_class()
-    info(f"*** Starting topology: {args.topo}\n")
-    info(topo)
+    info("*** Starting topology: {}\n".format(args.topo))
+    info(str(topo))
     run(topo)
 
 if __name__ == '__main__':
